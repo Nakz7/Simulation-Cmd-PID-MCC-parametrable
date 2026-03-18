@@ -26,7 +26,7 @@ pip install -r requirements.txt
 python simulation_moteur_industriel.py
 ```
 ## Dépendances
-*Python 3.10+
-*PyQt6
-*pyqtgraph
-*numpy
+- Python 3.10+
+- PyQt6
+- pyqtgraph
+- numpy
