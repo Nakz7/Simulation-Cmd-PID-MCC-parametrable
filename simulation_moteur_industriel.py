@@ -4,19 +4,21 @@
 ## @file simulation_moteur_industriel.py
 #  @brief Application de supervision industrielle pour la simulation d'un moteur CC asservi.
 #  @details Ce module implémente une interface permettant de paramétrer la
-#  physique du moteur, de calculer ses limites théoriques (saturation) et de simuler
-#  son asservissement via un régulateur PID en temps réel.
+#  physique du moteur, les gains du contrôleur PID, de calculer les limites théoriques,
+#  de simuler l'asservissement en temps réel, et d'extraire les indicateurs
+#  de performance dynamiques (Temps de montée, Dépassement, Erreur statique).
 #  @author Neil Legendre-Ferreira Da Costa
-#  @date 2026-03-18
+#  @date 2026-03-22
 
 import sys
 import numpy as np
 import pyqtgraph as pg
 from PyQt6 import QtWidgets, QtCore
 
+
 ## @class DcMotorPhysicalModel
 #  @brief Modèle mathématique et physique d'un moteur à courant continu.
-#  @details Résout les équations différentielles electromechanical couplées
+#  @details Résout les équations différentielles électromécaniques couplées
 #  par intégration numérique (méthode d'Euler).
 class DcMotorPhysicalModel:
     ## @brief Constructeur du modèle physique.
@@ -40,8 +42,7 @@ class DcMotorPhysicalModel:
         #  Courant d'induit instantané en Ampères.
         self.current_amp = 0.0
 
-        ## @brief Met à jour les paramètres physiques du moteur à la volée.
-
+    ## @brief Met à jour les paramètres physiques du moteur à la volée.
     def update_physical_parameters(self, inertia_j, friction_b, constant_k, resistance_r, inductance_l):
         self.inertia_j = inertia_j
         self.friction_b = friction_b
@@ -88,6 +89,15 @@ class PidControllerIndustrial:
     def update_saturation_limits(self, max_voltage_v):
         self.saturation_max_v = max_voltage_v
         self.saturation_min_v = -max_voltage_v
+
+    ## @brief Met à jour les gains du régulateur PID à la volée.
+    #  @param gain_p Nouveau gain proportionnel.
+    #  @param gain_i Nouveau gain intégral.
+    #  @param gain_d Nouveau gain dérivé.
+    def update_gains(self, gain_p, gain_i, gain_d):
+        self.gain_p = gain_p
+        self.gain_i = gain_i
+        self.gain_d = gain_d
 
     ## @brief Calcule le signal de commande avec possibilité de débrayer les actions.
     #  @param setpoint_target Valeur de consigne cible.
@@ -137,7 +147,7 @@ class IndustrialSupervisionDashboard(QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Supervision Industrielle - Asservissement & Paramétrage")
-        self.resize(1100, 650)
+        self.resize(1100, 700)
 
         # Modèles métiers
         self.motor_model = DcMotorPhysicalModel()
@@ -146,6 +156,12 @@ class IndustrialSupervisionDashboard(QtWidgets.QMainWindow):
         # Paramètres temporels globaux
         self.time_step_s = 0.01
         self.elapsed_time_s = 0.0
+
+        # Variables pour l'analyse des performances en temps réel
+        self.initial_speed_rpm = 0.0
+        self.maximum_speed_rpm = 0.0
+        self.time_at_10_percent_s = None
+        self.time_at_90_percent_s = None
 
         # Consigne
         self.target_speed_rpm = 100.0
@@ -181,7 +197,7 @@ class IndustrialSupervisionDashboard(QtWidgets.QMainWindow):
 
         main_layout.addWidget(self.tab_manager)
 
-    ## @brief Construit l'interface de l'onglet de Simulation (Boutons, Graphes).
+    ## @brief Construit l'interface de l'onglet de Simulation (Boutons, Graphes, Métriques).
     def _populate_simulation_tab(self):
         layout = QtWidgets.QHBoxLayout(self.tab_simulation)
         control_panel = QtWidgets.QVBoxLayout()
@@ -212,17 +228,40 @@ class IndustrialSupervisionDashboard(QtWidgets.QMainWindow):
         self.slider_target.setValue(int(self.target_speed_rpm))
         self.slider_target.valueChanged.connect(self.on_target_slider_changed)
 
+        # --- Panneau d'Analyse des Performances ---
+        self.group_metrics = QtWidgets.QGroupBox("Analyse des Performances")
+        metrics_layout = QtWidgets.QVBoxLayout()
+
+        self.lbl_rise_time = QtWidgets.QLabel("Temps de montée (10-90%) : -- s")
+        self.lbl_overshoot = QtWidgets.QLabel("Dépassement maximal : -- %")
+        self.lbl_steady_error = QtWidgets.QLabel("Erreur statique : -- tr/min")
+
+        # Stylisation pour un rendu plus industriel
+        style = "font-weight: bold; color: #FFFFF; font-size: 13px; padding: 2px;"
+        self.lbl_rise_time.setStyleSheet(style)
+        self.lbl_overshoot.setStyleSheet(style)
+        self.lbl_steady_error.setStyleSheet(style)
+        self.group_metrics.setStyleSheet(
+            "QGroupBox { font-weight: bold; border: 1px solid #95A5A6; margin-top: 10px; } QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 3px 0 3px; }")
+
+        metrics_layout.addWidget(self.lbl_rise_time)
+        metrics_layout.addWidget(self.lbl_overshoot)
+        metrics_layout.addWidget(self.lbl_steady_error)
+        self.group_metrics.setLayout(metrics_layout)
+
         # Assemblage du panneau
         control_panel.addWidget(self.btn_run_simulation)
         control_panel.addWidget(self.btn_pause_simulation)
         control_panel.addWidget(self.btn_reset_states)
-        control_panel.addSpacing(20)
+        control_panel.addSpacing(15)
         control_panel.addWidget(self.checkbox_p)
         control_panel.addWidget(self.checkbox_i)
         control_panel.addWidget(self.checkbox_d)
-        control_panel.addSpacing(20)
+        control_panel.addSpacing(15)
         control_panel.addWidget(self.lbl_target_display)
         control_panel.addWidget(self.slider_target)
+        control_panel.addSpacing(10)
+        control_panel.addWidget(self.group_metrics)
         control_panel.addStretch()
 
         # Zone Graphique
@@ -243,7 +282,7 @@ class IndustrialSupervisionDashboard(QtWidgets.QMainWindow):
         layout.addLayout(control_panel, 1)
         layout.addWidget(self.plot_widget, 4)
 
-    ## @brief Construit l'interface de l'onglet des Paramètres Physiques.
+    ## @brief Construit l'interface de l'onglet des Paramètres (Physique & PID).
     def _populate_physics_tab(self):
         layout = QtWidgets.QVBoxLayout(self.tab_physics)
         form_layout = QtWidgets.QFormLayout()
@@ -257,6 +296,12 @@ class IndustrialSupervisionDashboard(QtWidgets.QMainWindow):
             spinbox.setValue(value)
             return spinbox
 
+        # Paramètres PID
+        self.spin_gain_p = create_spinbox(135.0, 1.0, 2)
+        self.spin_gain_i = create_spinbox(110.0, 1.0, 2)
+        self.spin_gain_d = create_spinbox(12.0, 0.1, 2)
+
+        # Paramètres Physiques
         self.spin_inertia_j = create_spinbox(0.01, 0.001, 4)
         self.spin_friction_b = create_spinbox(0.1, 0.01, 4)
         self.spin_constant_k = create_spinbox(0.01, 0.001, 4)
@@ -264,6 +309,18 @@ class IndustrialSupervisionDashboard(QtWidgets.QMainWindow):
         self.spin_inductance_l = create_spinbox(0.5, 0.01, 3)
         self.spin_voltage_max = create_spinbox(24.0, 1.0, 1)  # Alimentation max (V)
 
+        # Séparation visuelle pour les paramètres du Régulateur
+        lbl_pid_title = QtWidgets.QLabel("--- Paramètres du Régulateur PID ---")
+        lbl_pid_title.setStyleSheet("font-weight: bold; color: #2980B9; margin-top: 10px;")
+        form_layout.addRow(lbl_pid_title)
+        form_layout.addRow("Gain Proportionnel (Kp):", self.spin_gain_p)
+        form_layout.addRow("Gain Intégral (Ki):", self.spin_gain_i)
+        form_layout.addRow("Gain Dérivé (Kd):", self.spin_gain_d)
+
+        # Séparation visuelle pour la Physique du Moteur
+        lbl_phys_title = QtWidgets.QLabel("--- Paramètres Physiques du Moteur ---")
+        lbl_phys_title.setStyleSheet("font-weight: bold; color: #C0392B; margin-top: 20px;")
+        form_layout.addRow(lbl_phys_title)
         form_layout.addRow("Moment d'inertie J (kg.m²):", self.spin_inertia_j)
         form_layout.addRow("Frottement visqueux b (N.m.s):", self.spin_friction_b)
         form_layout.addRow("Constante K (V.s/rad):", self.spin_constant_k)
@@ -271,8 +328,9 @@ class IndustrialSupervisionDashboard(QtWidgets.QMainWindow):
         form_layout.addRow("Inductance d'induit L (H):", self.spin_inductance_l)
         form_layout.addRow("Tension d'Alimentation Max V (Volts):", self.spin_voltage_max)
 
+        # Bouton d'application
         self.btn_apply_physics = QtWidgets.QPushButton("Appliquer les Paramètres & Calculer les Limites")
-        self.btn_apply_physics.setStyleSheet("font-weight: bold; padding: 10px;")
+        self.btn_apply_physics.setStyleSheet("font-weight: bold; padding: 10px; margin-top: 15px;")
         self.btn_apply_physics.clicked.connect(self.on_apply_physical_parameters)
 
         self.lbl_theoretical_max = QtWidgets.QLabel("Vitesse Maximale Théorique : -- rad/s (-- tr/min)")
@@ -290,14 +348,29 @@ class IndustrialSupervisionDashboard(QtWidgets.QMainWindow):
         self.simulation_timer.timeout.connect(self.execute_simulation_cycle)
 
     ## @brief Callback lié au mouvement du slider de consigne.
+    #  @details Réinitialise également les compteurs d'analyse de performance (Échelon de test).
     def on_target_slider_changed(self, value):
         self.target_speed_rpm = float(value)
         self.target_speed_rad_s = self.target_speed_rpm * (2 * np.pi) / 60.0
         self.lbl_target_display.setText(f"Consigne Vitesse: {self.target_speed_rpm:.1f} tr/min")
 
+        # Réinitialisation des indicateurs de performance pour la nouvelle consigne
+        self.initial_speed_rpm = self.buffer_measured_rpm[-1] if len(self.buffer_measured_rpm) > 0 else 0.0
+        self.maximum_speed_rpm = self.initial_speed_rpm
+        self.time_at_10_percent_s = None
+        self.time_at_90_percent_s = None
+
+        self.lbl_rise_time.setText("Temps de montée (10-90%) : -- s")
+        self.lbl_overshoot.setText("Dépassement maximal : -- %")
+
     ## @brief Callback pour appliquer les modifications physiques et calculer la limite.
     def on_apply_physical_parameters(self):
-        # Récupération des données UI
+        # Récupération des données UI pour le PID
+        kp = self.spin_gain_p.value()
+        ki = self.spin_gain_i.value()
+        kd = self.spin_gain_d.value()
+
+        # Récupération des données UI pour la physique
         j = self.spin_inertia_j.value()
         b = self.spin_friction_b.value()
         k = self.spin_constant_k.value()
@@ -306,8 +379,9 @@ class IndustrialSupervisionDashboard(QtWidgets.QMainWindow):
         v_max = self.spin_voltage_max.value()
 
         # Injection dans les modèles
-        self.motor_model.update_physical_parameters(j, b, k, r, l)
+        self.pid_controller.update_gains(kp, ki, kd)
         self.pid_controller.update_saturation_limits(v_max)
+        self.motor_model.update_physical_parameters(j, b, k, r, l)
 
         self._calculate_theoretical_maximum()
 
@@ -336,6 +410,7 @@ class IndustrialSupervisionDashboard(QtWidgets.QMainWindow):
     def stop_simulation_loop(self):
         self.simulation_timer.stop()
 
+    ## @brief Réinitialise l'état physique, le PID, et replace le graphe aux conditions initiales.
     def reset_simulation_states(self):
         self.simulation_timer.stop()
         self.motor_model.speed_rad_s = 0.0
@@ -344,12 +419,26 @@ class IndustrialSupervisionDashboard(QtWidgets.QMainWindow):
         self.pid_controller.previous_error = 0.0
         self.elapsed_time_s = 0.0
 
+        # Reset variables d'analyse
+        self.initial_speed_rpm = 0.0
+        self.maximum_speed_rpm = 0.0
+        self.time_at_10_percent_s = None
+        self.time_at_90_percent_s = None
+        self.lbl_rise_time.setText("Temps de montée (10-90%) : -- s")
+        self.lbl_overshoot.setText("Dépassement maximal : -- %")
+        self.lbl_steady_error.setText("Erreur statique : -- tr/min")
+
         self.buffer_time = [0.0] * self.max_display_points
         self.buffer_measured_rpm = [0.0] * self.max_display_points
         self.buffer_target_rpm = [0.0] * self.max_display_points
         self._refresh_plot_curves()
 
+        # Réactivation de l'auto-dimensionnement pour replacer le graphe à l'échelle initiale
+        self.plot_widget.enableAutoRange(axis='xy')
+
     ## @brief Cycle d'exécution principal appelé par le Timer.
+    #  @details Contient l'appel au solveur d'équations différentielles, au PID
+    #  ainsi que la détection algorithmique des métriques de performance temps-réel.
     def execute_simulation_cycle(self):
         self.elapsed_time_s += self.time_step_s
 
@@ -369,6 +458,39 @@ class IndustrialSupervisionDashboard(QtWidgets.QMainWindow):
         # Application au modèle physique
         new_speed_rad_s = self.motor_model.execute_simulation_step(command_voltage_v, self.time_step_s)
         new_speed_rpm = new_speed_rad_s * 60.0 / (2 * np.pi)
+
+        # --- CALCUL DES INDICATEURS DE PERFORMANCE ---
+
+        # 1. Erreur Statique (Calculée à chaque pas de temps)
+        error_rpm = self.target_speed_rpm - new_speed_rpm
+        self.lbl_steady_error.setText(f"Erreur statique : {error_rpm:+.2f} tr/min")
+
+        # 2. Dépassement & Temps de Montée (Analyse sur échelon positif significatif)
+        step_amplitude = self.target_speed_rpm - self.initial_speed_rpm
+        if step_amplitude > 1.0:
+            # Dépassement maximal (Overshoot)
+            if new_speed_rpm > self.maximum_speed_rpm:
+                self.maximum_speed_rpm = new_speed_rpm
+                if self.target_speed_rpm > 0:
+                    overshoot_pct = ((self.maximum_speed_rpm - self.target_speed_rpm) / self.target_speed_rpm) * 100.0
+                    # N'afficher le dépassement que s'il est au-dessus de la consigne (valeur positive)
+                    self.lbl_overshoot.setText(f"Dépassement maximal : {max(0.0, overshoot_pct):.2f} %")
+
+            # Temps de montée (Rise time de 10% à 90%)
+            threshold_10 = self.initial_speed_rpm + 0.10 * step_amplitude
+            threshold_90 = self.initial_speed_rpm + 0.90 * step_amplitude
+
+            if self.time_at_10_percent_s is None and new_speed_rpm >= threshold_10:
+                self.time_at_10_percent_s = self.elapsed_time_s
+
+            if self.time_at_90_percent_s is None and new_speed_rpm >= threshold_90:
+                self.time_at_90_percent_s = self.elapsed_time_s
+
+                # Dès le franchissement des 90%, on fige le calcul final
+                if self.time_at_10_percent_s is not None:
+                    rise_time_s = self.time_at_90_percent_s - self.time_at_10_percent_s
+                    self.lbl_rise_time.setText(f"Temps de montée (10-90%) : {rise_time_s:.3f} s")
+        # ---------------------------------------------
 
         # Mise à jour des FIFO
         self.buffer_time.pop(0)
