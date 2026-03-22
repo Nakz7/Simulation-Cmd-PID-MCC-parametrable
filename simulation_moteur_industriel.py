@@ -488,7 +488,7 @@ class IndustrialSupervisionDashboard(QtWidgets.QMainWindow):
         self.btn_apply_physics.clicked.connect(self.on_apply_physical_parameters)
 
         self.lbl_theoretical_max = QtWidgets.QLabel("Vitesse Maximale Théorique : -- rad/s (-- tr/min)")
-        self.lbl_theoretical_max.setStyleSheet("font-size: 14px; color: #333; margin-top: 15px;")
+        self.lbl_theoretical_max.setStyleSheet("font-size: 14px; color: #FFF; margin-top: 15px;")
 
         layout.addLayout(form_layout)
         layout.addWidget(self.btn_apply_physics)
