@@ -4,10 +4,10 @@
 ## @file simulation_moteur_industriel.py
 #  @brief Application de supervision industrielle pour la simulation d'un moteur CC asservi.
 #  @details Ce module implémente une interface permettant de paramétrer la
-#  physique du moteur, de calculer ses limites théoriques (saturation), de simuler
+#  physique du moteur, de calculer ses limites théoriques, de simuler
 #  son asservissement via un régulateur PID en temps réel, et d'extraire les
-#  indicateurs de performance dynamiques. Il inclut un outil de grille (DoE) pour
-#  les campagnes d'essais.
+#  indicateurs de performance dynamiques. Il inclut un outil de grille (DoE)
+#  et l'injection de bruit stochastique pour des campagnes d'essais réalistes.
 #  @author Neil Legendre-Ferreira Da Costa
 #  @date 2026-03-22
 
@@ -99,7 +99,7 @@ class PidControllerIndustrial:
 
     ## @brief Calcule le signal de commande avec possibilité de débrayer les actions.
     #  @param setpoint_target Valeur de consigne cible.
-    #  @param measured_feedback Valeur mesurée par le capteur.
+    #  @param measured_feedback Valeur mesurée par le capteur (potentiellement bruitée).
     #  @param time_step_s Pas de temps de la boucle (secondes).
     #  @param enable_p Active le terme Proportionnel.
     #  @param enable_i Active le terme Intégral.
@@ -215,7 +215,7 @@ class ExperimentDataGrid(QtWidgets.QTableWidget):
 
         QtGui.QGuiApplication.clipboard().setText(copy_text)
 
-    ## @brief Colle le contenu du presse-papiers dans la grille avec comportement intelligent (Remplissage).
+    ## @brief Colle le contenu du presse-papiers dans la grille avec comportement intelligent.
     def _paste_from_clipboard(self):
         text = QtGui.QGuiApplication.clipboard().text().strip('\n')
         if not text:
@@ -312,6 +312,9 @@ class IndustrialSupervisionDashboard(QtWidgets.QMainWindow):
         # Paramètres temporels globaux
         self.time_step_s = 0.01
         self.elapsed_time_s = 0.0
+
+        # Niveau de bruit stochastique par défaut (Écart-type du capteur en rad/s)
+        self.noise_std = 0.1
 
         # Variables pour l'analyse des performances en temps réel
         self.initial_speed_rpm = 0.0
@@ -466,6 +469,9 @@ class IndustrialSupervisionDashboard(QtWidgets.QMainWindow):
         self.spin_inductance_l = create_spinbox(0.5, 0.01, 3)
         self.spin_voltage_max = create_spinbox(24.0, 1.0, 1)
 
+        # Bruit Stochastique de Mesure
+        self.spin_noise_std = create_spinbox(0.1, 0.01, 3, maximum=10.0)
+
         lbl_pid_title = QtWidgets.QLabel("--- Paramètres du Régulateur PID ---")
         lbl_pid_title.setStyleSheet("font-weight: bold; color: #2980B9; margin-top: 10px;")
         form_layout.addRow(lbl_pid_title)
@@ -473,7 +479,7 @@ class IndustrialSupervisionDashboard(QtWidgets.QMainWindow):
         form_layout.addRow("Gain Intégral (Ki):", self.spin_gain_i)
         form_layout.addRow("Gain Dérivé (Kd):", self.spin_gain_d)
 
-        lbl_phys_title = QtWidgets.QLabel("--- Paramètres Physiques du Moteur ---")
+        lbl_phys_title = QtWidgets.QLabel("--- Paramètres Physiques du Moteur & Environnement ---")
         lbl_phys_title.setStyleSheet("font-weight: bold; color: #C0392B; margin-top: 20px;")
         form_layout.addRow(lbl_phys_title)
         form_layout.addRow("Moment d'inertie J (kg.m²):", self.spin_inertia_j)
@@ -482,6 +488,7 @@ class IndustrialSupervisionDashboard(QtWidgets.QMainWindow):
         form_layout.addRow("Résistance d'induit R (Ω):", self.spin_resistance_r)
         form_layout.addRow("Inductance d'induit L (H):", self.spin_inductance_l)
         form_layout.addRow("Tension d'Alimentation Max V (Volts):", self.spin_voltage_max)
+        form_layout.addRow("Bruit de mesure capteur (Écart-type rad/s):", self.spin_noise_std)
 
         self.btn_apply_physics = QtWidgets.QPushButton("Appliquer les Paramètres & Calculer les Limites")
         self.btn_apply_physics.setStyleSheet("font-weight: bold; padding: 10px; margin-top: 15px;")
@@ -506,7 +513,7 @@ class IndustrialSupervisionDashboard(QtWidgets.QMainWindow):
 
         self.spin_experiment_rows = QtWidgets.QSpinBox()
         self.spin_experiment_rows.setRange(1, 1000)
-        self.spin_experiment_rows.setValue(9)
+        self.spin_experiment_rows.setValue(9)  # L9 Taguchi par défaut
         self.spin_experiment_rows.setMinimumWidth(70)
         self.spin_experiment_rows.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
 
@@ -529,7 +536,6 @@ class IndustrialSupervisionDashboard(QtWidgets.QMainWindow):
         self.grid_experiments = ExperimentDataGrid()
         self.grid_experiments.setColumnCount(7)
 
-        # Ajout de la liste d'étiquettes correspondantes
         labels = ["K_p", "K_i", "K_d", "J","Dépassement", "Temps de montée", "Erreur statique"]
         self.grid_experiments.setHorizontalHeaderLabels(labels)
 
@@ -589,6 +595,8 @@ class IndustrialSupervisionDashboard(QtWidgets.QMainWindow):
         l = self.spin_inductance_l.value()
         v_max = self.spin_voltage_max.value()
 
+        self.noise_std = self.spin_noise_std.value()
+
         # Sécurité Division par Zéro
         if j <= 0.0:
             QtWidgets.QMessageBox.critical(self, "Erreur de Physique",
@@ -609,6 +617,7 @@ class IndustrialSupervisionDashboard(QtWidgets.QMainWindow):
         r_res = self.spin_resistance_r.value()
         l = self.spin_inductance_l.value()
         v_max = self.spin_voltage_max.value()
+        noise_std = self.spin_noise_std.value()
 
         target_rpm = self.target_speed_rpm
         target_rad = self.target_speed_rad_s
@@ -651,11 +660,16 @@ class IndustrialSupervisionDashboard(QtWidgets.QMainWindow):
             step_amp = target_rpm
 
             while t < sim_duration_s:
-                voltage = test_pid.compute_control_effort(target_rad, test_motor.speed_rad_s, dt, enable_p, enable_i,
+                # Injection stochastique du bruit capteur pour l'essai
+                sensor_noise = np.random.normal(0.0, noise_std)
+                measured_feedback_rad_s = test_motor.speed_rad_s + sensor_noise
+
+                voltage = test_pid.compute_control_effort(target_rad, measured_feedback_rad_s, dt, enable_p, enable_i,
                                                           enable_d)
                 speed_rad = test_motor.execute_simulation_step(voltage, dt)
                 speed_rpm = speed_rad * 60.0 / (2 * np.pi)
 
+                # Les indicateurs de performance sont calculés sur la vraie vitesse lissée par la physique
                 if speed_rpm > max_rpm:
                     max_rpm = speed_rpm
 
@@ -670,7 +684,6 @@ class IndustrialSupervisionDashboard(QtWidgets.QMainWindow):
             overshoot = max(0.0, ((max_rpm - target_rpm) / target_rpm) * 100.0) if target_rpm > 0 else 0.0
             steady_error = target_rpm - speed_rpm
 
-            # Gérer visuellement le cas d'une saturation physique lors de l'essai
             if t90 is not None and t10 is not None:
                 rise_time_str = f"{(t90 - t10):.3f}"
             else:
@@ -736,7 +749,9 @@ class IndustrialSupervisionDashboard(QtWidgets.QMainWindow):
     def execute_simulation_cycle(self):
         self.elapsed_time_s += self.time_step_s
 
-        measured_feedback_rad_s = self.motor_model.speed_rad_s
+        # Lecture du capteur avec injection de bruit stochastique
+        sensor_noise = np.random.normal(0.0, self.noise_std)
+        measured_feedback_rad_s = self.motor_model.speed_rad_s + sensor_noise
 
         command_voltage_v = self.pid_controller.compute_control_effort(
             self.target_speed_rad_s,
@@ -750,7 +765,7 @@ class IndustrialSupervisionDashboard(QtWidgets.QMainWindow):
         new_speed_rad_s = self.motor_model.execute_simulation_step(command_voltage_v, self.time_step_s)
         new_speed_rpm = new_speed_rad_s * 60.0 / (2 * np.pi)
 
-        # 1. Erreur Statique
+        # 1. Erreur Statique calculée sur la vraie vitesse (non bruitée)
         error_rpm = self.target_speed_rpm - new_speed_rpm
         self.lbl_steady_error.setText(f"Erreur statique : {error_rpm:+.2f} tr/min")
 
