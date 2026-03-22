@@ -7,7 +7,7 @@
 #  physique du moteur, de calculer ses limites théoriques (saturation), de simuler
 #  son asservissement via un régulateur PID en temps réel, et d'extraire les
 #  indicateurs de performance dynamiques. Il inclut un outil de grille (DoE) pour
-#  les campagnes d'essais automatisées.
+#  les campagnes d'essais.
 #  @author Neil Legendre-Ferreira Da Costa
 #  @date 2026-03-22
 
@@ -141,7 +141,7 @@ class PidControllerIndustrial:
 ## @class ExperimentDataGrid
 #  @brief Grille de données avancée pour les plans d'expériences.
 #  @details Implémente le copier/coller (depuis/vers Excel), le glisser-déposer (Drag & Drop),
-#  ainsi qu'une vérification stricte de la syntaxe numérique des cellules.
+#  la sélection par colonnes, le comportement de la touche Entrée et une vérification stricte.
 class ExperimentDataGrid(QtWidgets.QTableWidget):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -150,16 +150,36 @@ class ExperimentDataGrid(QtWidgets.QTableWidget):
         self.setDragEnabled(True)
         self.setAcceptDrops(True)
         self.viewport().setAcceptDrops(True)
-        self.setDragDropOverwriteMode(False)
+        self.setDragDropOverwriteMode(True)  # Permet d'écraser la cellule de destination (Excel-like)
         self.setDropIndicatorShown(True)
         self.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection)
         self.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectItems)
-        self.setDragDropMode(QtWidgets.QAbstractItemView.DragDropMode.InternalMove)
+        self.setDragDropMode(QtWidgets.QAbstractItemView.DragDropMode.DragDrop)
+
+        # Rendre les en-têtes cliquables pour la sélection de colonnes
+        self.horizontalHeader().setSectionsClickable(True)
+        self.horizontalHeader().sectionClicked.connect(self._on_header_clicked)
 
         # Connexion du signal de modification pour la validation
         self.itemChanged.connect(self._on_item_changed)
 
-    ## @brief Intercepte les événements clavier pour gérer le copier-coller.
+    ## @brief Sélectionne la colonne entière lors du clic sur son en-tête.
+    #  @param logical_index Index de la colonne cliquée.
+    def _on_header_clicked(self, logical_index):
+        self.selectColumn(logical_index)
+
+    ## @brief Surcharge de l'événement de dépôt (Drop) pour assurer la sécurité de la grille.
+    #  @details Comble les vides laissés par le déplacement des cellules avec "0.0".
+    def dropEvent(self, event):
+        super().dropEvent(event)
+        self.blockSignals(True)
+        for r in range(self.rowCount()):
+            for c in range(self.columnCount()):
+                if self.item(r, c) is None or self.item(r, c).text().strip() == "":
+                    self.setItem(r, c, QtWidgets.QTableWidgetItem("0.0"))
+        self.blockSignals(False)
+
+    ## @brief Intercepte les événements clavier pour gérer le copier-coller et l'appui sur Entrée.
     def keyPressEvent(self, event):
         if event.matches(QtGui.QKeySequence.StandardKey.Copy):
             self._copy_to_clipboard()
@@ -167,6 +187,14 @@ class ExperimentDataGrid(QtWidgets.QTableWidget):
             self._paste_from_clipboard()
         elif event.key() == QtCore.Qt.Key.Key_Delete:
             self._delete_selection()
+        elif event.key() in (QtCore.Qt.Key.Key_Return, QtCore.Qt.Key.Key_Enter):
+            row = self.currentRow()
+            col = self.currentColumn()
+            super().keyPressEvent(event)  # Laisse le composant finir l'édition en cours
+
+            # Déplacement intelligent vers la ligne suivante dans la même colonne
+            if row < self.rowCount() - 1:
+                self.setCurrentCell(row + 1, col)
         else:
             super().keyPressEvent(event)
 
@@ -176,7 +204,7 @@ class ExperimentDataGrid(QtWidgets.QTableWidget):
         if not selection:
             return
 
-        sel = selection  # Prendre le premier bloc de la liste
+        sel = selection
         copy_text = ""
         for row in range(sel.topRow(), sel.bottomRow() + 1):
             row_data = ''
@@ -187,9 +215,9 @@ class ExperimentDataGrid(QtWidgets.QTableWidget):
 
         QtGui.QGuiApplication.clipboard().setText(copy_text)
 
-    ## @brief Colle le contenu du presse-papiers dans la grille à partir de la cellule active.
+    ## @brief Colle le contenu du presse-papiers dans la grille avec comportement intelligent (Remplissage).
     def _paste_from_clipboard(self):
-        text = QtGui.QGuiApplication.clipboard().text()
+        text = QtGui.QGuiApplication.clipboard().text().strip('\n')
         if not text:
             return
 
@@ -197,26 +225,40 @@ class ExperimentDataGrid(QtWidgets.QTableWidget):
         if not selection:
             return
 
-        sel = selection  # Prendre le premier bloc de la liste
+        sel = selection
         start_row = sel.topRow()
         start_col = sel.leftColumn()
 
-        self.blockSignals(True)  # Empêche la validation cellule par cellule pendant le collage
+        self.blockSignals(True)
+        rows = text.split('\n')
 
-        rows = text.strip('\n').split('\n')
-        for r_idx, row_str in enumerate(rows):
-            cells = row_str.split('\t')
-            for c_idx, cell_text in enumerate(cells):
-                current_row = start_row + r_idx
-                current_col = start_col + c_idx
+        # Comportement "Excel-like" : Si on copie une seule valeur et qu'on a sélectionné plusieurs cellules
+        if len(rows) == 1 and '\t' not in rows:
+            single_val = rows.strip()
+            for sel_range in selection:
+                for r in range(sel_range.topRow(), sel_range.bottomRow() + 1):
+                    for c in range(sel_range.leftColumn(), sel_range.rightColumn() + 1):
+                        item = self.item(r, c)
+                        if not item:
+                            item = QtWidgets.QTableWidgetItem()
+                            self.setItem(r, c, item)
+                        item.setText(single_val)
+                        self._validate_cell_value(item)
+        else:
+            # Comportement normal : On colle la plage aux coordonnées de départ
+            for r_idx, row_str in enumerate(rows):
+                cells = row_str.split('\t')
+                for c_idx, cell_text in enumerate(cells):
+                    current_row = start_row + r_idx
+                    current_col = start_col + c_idx
 
-                if current_row < self.rowCount() and current_col < self.columnCount():
-                    item = self.item(current_row, current_col)
-                    if not item:
-                        item = QtWidgets.QTableWidgetItem()
-                        self.setItem(current_row, current_col, item)
-                    item.setText(cell_text.strip())
-                    self._validate_cell_value(item)  # Validation individuelle post-collage
+                    if current_row < self.rowCount() and current_col < self.columnCount():
+                        item = self.item(current_row, current_col)
+                        if not item:
+                            item = QtWidgets.QTableWidgetItem()
+                            self.setItem(current_row, current_col, item)
+                        item.setText(cell_text.strip())
+                        self._validate_cell_value(item)
 
         self.blockSignals(False)
 
@@ -236,6 +278,7 @@ class ExperimentDataGrid(QtWidgets.QTableWidget):
     ## @brief Vérifie la cohérence numérique d'une cellule et corrige les erreurs.
     def _validate_cell_value(self, item):
         if not item or not item.text().strip():
+            item.setText("0.0") if item else None
             return
 
         # Remplacement de la virgule par un point pour la conversion float
@@ -406,7 +449,7 @@ class IndustrialSupervisionDashboard(QtWidgets.QMainWindow):
             spinbox = QtWidgets.QDoubleSpinBox()
             spinbox.setDecimals(decimals)
             spinbox.setSingleStep(step)
-            spinbox.setRange(0.0, maximum)  # Tolère temporairement 0, sécurité gérée lors de l'application
+            spinbox.setRange(0.0, maximum)
             spinbox.setValue(value)
             return spinbox
 
@@ -463,8 +506,8 @@ class IndustrialSupervisionDashboard(QtWidgets.QMainWindow):
 
         self.spin_experiment_rows = QtWidgets.QSpinBox()
         self.spin_experiment_rows.setRange(1, 1000)
-        self.spin_experiment_rows.setValue(9)  # L9 Taguchi par défaut
-        self.spin_experiment_rows.setMinimumWidth(70)  # Agrandissement pour 2 ou 3 chiffres
+        self.spin_experiment_rows.setValue(9)
+        self.spin_experiment_rows.setMinimumWidth(70)
         self.spin_experiment_rows.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
 
         btn_apply_rows = QtWidgets.QPushButton("Mettre à jour la grille")
@@ -550,7 +593,7 @@ class IndustrialSupervisionDashboard(QtWidgets.QMainWindow):
         if j <= 0.0:
             QtWidgets.QMessageBox.critical(self, "Erreur de Physique",
                                            "Le moment d'inertie J ne peut pas être nul ou négatif.\nVeuillez saisir une valeur valide pour éviter une division par zéro.")
-            self.spin_inertia_j.setValue(0.01)  # Rétablissement forcé d'une valeur sure
+            self.spin_inertia_j.setValue(0.01)
             return
 
         self.pid_controller.update_gains(kp, ki, kd)
@@ -561,7 +604,6 @@ class IndustrialSupervisionDashboard(QtWidgets.QMainWindow):
 
     ## @brief Exécute de manière automatisée et accélérée tous les essais renseignés dans la grille DoE.
     def on_run_experiments(self):
-        # Récupération des constantes physiques de base inchangées pour l'expérience
         b = self.spin_friction_b.value()
         k = self.spin_constant_k.value()
         r_res = self.spin_resistance_r.value()
@@ -571,7 +613,11 @@ class IndustrialSupervisionDashboard(QtWidgets.QMainWindow):
         target_rpm = self.target_speed_rpm
         target_rad = self.target_speed_rad_s
         dt = self.time_step_s
-        sim_duration_s = 10.0  # Durée de simulation forcée pour chaque essai
+        sim_duration_s = 10.0
+
+        enable_p = self.checkbox_p.isChecked()
+        enable_i = self.checkbox_i.isChecked()
+        enable_d = self.checkbox_d.isChecked()
 
         self.grid_experiments.blockSignals(True)
 
@@ -584,7 +630,6 @@ class IndustrialSupervisionDashboard(QtWidgets.QMainWindow):
             except (ValueError, AttributeError):
                 continue
 
-            # Sécurité anti-crash pour la division par zéro du modèle mécanique
             if j_inertia <= 0.0:
                 QtWidgets.QMessageBox.critical(
                     self,
@@ -595,7 +640,6 @@ class IndustrialSupervisionDashboard(QtWidgets.QMainWindow):
                 self.grid_experiments.blockSignals(False)
                 return
 
-            # Instanciation de modèles temporaires isolés pour ne pas affecter le graphique en temps réel
             test_motor = DcMotorPhysicalModel(inertia_j=j_inertia, friction_b=b, constant_k=k, resistance_r=r_res,
                                               inductance_l=l)
             test_pid = PidControllerIndustrial(gain_p=kp, gain_i=ki, gain_d=kd, saturation_limit_v=v_max)
@@ -606,9 +650,9 @@ class IndustrialSupervisionDashboard(QtWidgets.QMainWindow):
             t90 = None
             step_amp = target_rpm
 
-            # Boucle d'intégration numérique rapide
             while t < sim_duration_s:
-                voltage = test_pid.compute_control_effort(target_rad, test_motor.speed_rad_s, dt)
+                voltage = test_pid.compute_control_effort(target_rad, test_motor.speed_rad_s, dt, enable_p, enable_i,
+                                                          enable_d)
                 speed_rad = test_motor.execute_simulation_step(voltage, dt)
                 speed_rpm = speed_rad * 60.0 / (2 * np.pi)
 
@@ -623,14 +667,17 @@ class IndustrialSupervisionDashboard(QtWidgets.QMainWindow):
 
                 t += dt
 
-            # Calcul des métriques de sortie
             overshoot = max(0.0, ((max_rpm - target_rpm) / target_rpm) * 100.0) if target_rpm > 0 else 0.0
-            rise_time = (t90 - t10) if (t90 is not None and t10 is not None) else 0.0
             steady_error = target_rpm - speed_rpm
 
-            # Écriture dans les colonnes de réponse
+            # Gérer visuellement le cas d'une saturation physique lors de l'essai
+            if t90 is not None and t10 is not None:
+                rise_time_str = f"{(t90 - t10):.3f}"
+            else:
+                rise_time_str = "Saturé"
+
             self.grid_experiments.setItem(row, 4, QtWidgets.QTableWidgetItem(f"{overshoot:.2f}"))
-            self.grid_experiments.setItem(row, 5, QtWidgets.QTableWidgetItem(f"{rise_time:.3f}"))
+            self.grid_experiments.setItem(row, 5, QtWidgets.QTableWidgetItem(rise_time_str))
             self.grid_experiments.setItem(row, 6, QtWidgets.QTableWidgetItem(f"{steady_error:.2f}"))
 
         self.grid_experiments.blockSignals(False)
