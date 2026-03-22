@@ -4,12 +4,12 @@ Application PyQt6 de supervision industrielle permettant de simuler un moteur à
 
 ## Fonctionnalités
 - **Simulation temps réel d’un moteur CC :** Résolution par intégration numérique (méthode d'Euler).
-- **Contrôle PID industriel :** 
+- **Contrôle PID :** 
   - Activation/désactivation indépendante des actions P, I et D.
   - Sécurité Anti-windup contre l'emballement de l'intégrateur.
 - **Analyse des performances dynamiques :** Détection et calcul en temps réel du temps de montée (10-90%), du dépassement maximal (%) et de l'erreur statique (tr/min).
 - **Paramétrage physique du moteur :**
-  - Inertie du rotor ($J$) avec sécurité anti-division par zéro
+  - Inertie du rotor ($J$)
   - Frottement visqueux ($b$)
   - Constante électromécanique ($K$)
   - Résistance ($R$) et Inductance ($L$) d'induit
@@ -21,9 +21,8 @@ Application PyQt6 de supervision industrielle permettant de simuler un moteur à
   - Validation syntaxique stricte des saisies pour prévenir les crashs.
   - Lancement accéléré et automatisé des plans d'expériences en tâche de fond avec auto-remplissage des réponses (performances mesurées pour chaque essai).
 
-## Installationbash
+## Installation
 pip install -r requirements.txt
-```
 
 ## Lancement
 ```bash
