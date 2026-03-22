@@ -4,16 +4,17 @@
 ## @file simulation_moteur_industriel.py
 #  @brief Application de supervision industrielle pour la simulation d'un moteur CC asservi.
 #  @details Ce module implémente une interface permettant de paramétrer la
-#  physique du moteur, les gains du contrôleur PID, de calculer les limites théoriques,
-#  de simuler l'asservissement en temps réel, et d'extraire les indicateurs
-#  de performance dynamiques (Temps de montée, Dépassement, Erreur statique).
+#  physique du moteur, de calculer ses limites théoriques (saturation), de simuler
+#  son asservissement via un régulateur PID en temps réel, et d'extraire les
+#  indicateurs de performance dynamiques. Il inclut un outil de grille (DoE) pour
+#  les campagnes d'essais automatisées.
 #  @author Neil Legendre-Ferreira Da Costa
 #  @date 2026-03-22
 
 import sys
 import numpy as np
 import pyqtgraph as pg
-from PyQt6 import QtWidgets, QtCore
+from PyQt6 import QtWidgets, QtCore, QtGui
 
 
 ## @class DcMotorPhysicalModel
@@ -91,9 +92,6 @@ class PidControllerIndustrial:
         self.saturation_min_v = -max_voltage_v
 
     ## @brief Met à jour les gains du régulateur PID à la volée.
-    #  @param gain_p Nouveau gain proportionnel.
-    #  @param gain_i Nouveau gain intégral.
-    #  @param gain_d Nouveau gain dérivé.
     def update_gains(self, gain_p, gain_i, gain_d):
         self.gain_p = gain_p
         self.gain_i = gain_i
@@ -138,6 +136,121 @@ class PidControllerIndustrial:
 
         self.previous_error = current_error
         return command_output
+
+
+## @class ExperimentDataGrid
+#  @brief Grille de données avancée pour les plans d'expériences.
+#  @details Implémente le copier/coller (depuis/vers Excel), le glisser-déposer (Drag & Drop),
+#  ainsi qu'une vérification stricte de la syntaxe numérique des cellules.
+class ExperimentDataGrid(QtWidgets.QTableWidget):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        # Configuration du Drag and Drop et de la sélection
+        self.setDragEnabled(True)
+        self.setAcceptDrops(True)
+        self.viewport().setAcceptDrops(True)
+        self.setDragDropOverwriteMode(False)
+        self.setDropIndicatorShown(True)
+        self.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectItems)
+        self.setDragDropMode(QtWidgets.QAbstractItemView.DragDropMode.InternalMove)
+
+        # Connexion du signal de modification pour la validation
+        self.itemChanged.connect(self._on_item_changed)
+
+    ## @brief Intercepte les événements clavier pour gérer le copier-coller.
+    def keyPressEvent(self, event):
+        if event.matches(QtGui.QKeySequence.StandardKey.Copy):
+            self._copy_to_clipboard()
+        elif event.matches(QtGui.QKeySequence.StandardKey.Paste):
+            self._paste_from_clipboard()
+        elif event.key() == QtCore.Qt.Key.Key_Delete:
+            self._delete_selection()
+        else:
+            super().keyPressEvent(event)
+
+    ## @brief Copie la sélection actuelle dans le presse-papiers (format TSV).
+    def _copy_to_clipboard(self):
+        selection = self.selectedRanges()
+        if not selection:
+            return
+
+        sel = selection  # Prendre le premier bloc de la liste
+        copy_text = ""
+        for row in range(sel.topRow(), sel.bottomRow() + 1):
+            row_data = ''
+            for col in range(sel.leftColumn(), sel.rightColumn() + 1):
+                item = self.item(row, col)
+                row_data.append(item.text() if item else "")
+            copy_text += "\t".join(row_data) + "\n"
+
+        QtGui.QGuiApplication.clipboard().setText(copy_text)
+
+    ## @brief Colle le contenu du presse-papiers dans la grille à partir de la cellule active.
+    def _paste_from_clipboard(self):
+        text = QtGui.QGuiApplication.clipboard().text()
+        if not text:
+            return
+
+        selection = self.selectedRanges()
+        if not selection:
+            return
+
+        sel = selection  # Prendre le premier bloc de la liste
+        start_row = sel.topRow()
+        start_col = sel.leftColumn()
+
+        self.blockSignals(True)  # Empêche la validation cellule par cellule pendant le collage
+
+        rows = text.strip('\n').split('\n')
+        for r_idx, row_str in enumerate(rows):
+            cells = row_str.split('\t')
+            for c_idx, cell_text in enumerate(cells):
+                current_row = start_row + r_idx
+                current_col = start_col + c_idx
+
+                if current_row < self.rowCount() and current_col < self.columnCount():
+                    item = self.item(current_row, current_col)
+                    if not item:
+                        item = QtWidgets.QTableWidgetItem()
+                        self.setItem(current_row, current_col, item)
+                    item.setText(cell_text.strip())
+                    self._validate_cell_value(item)  # Validation individuelle post-collage
+
+        self.blockSignals(False)
+
+    ## @brief Supprime le contenu des cellules sélectionnées.
+    def _delete_selection(self):
+        self.blockSignals(True)
+        for item in self.selectedItems():
+            item.setText("0.0")
+        self.blockSignals(False)
+
+    ## @brief Callback déclenché à chaque modification de cellule.
+    def _on_item_changed(self, item):
+        self.blockSignals(True)
+        self._validate_cell_value(item)
+        self.blockSignals(False)
+
+    ## @brief Vérifie la cohérence numérique d'une cellule et corrige les erreurs.
+    def _validate_cell_value(self, item):
+        if not item or not item.text().strip():
+            return
+
+        # Remplacement de la virgule par un point pour la conversion float
+        text = item.text().replace(',', '.')
+
+        try:
+            val = float(text)
+            item.setText(str(val))  # Standardisation du format
+        except ValueError:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Erreur de Syntaxe",
+                f"La valeur saisie '{item.text()}' n'est pas numérique.\nLa cellule a été réinitialisée à 0.0."
+            )
+            item.setText("0.0")
 
 
 ## @class IndustrialSupervisionDashboard
@@ -188,12 +301,15 @@ class IndustrialSupervisionDashboard(QtWidgets.QMainWindow):
         # Création des onglets
         self.tab_simulation = QtWidgets.QWidget()
         self.tab_physics = QtWidgets.QWidget()
+        self.tab_experiments = QtWidgets.QWidget()
 
         self._populate_simulation_tab()
         self._populate_physics_tab()
+        self._populate_experiments_tab()
 
         self.tab_manager.addTab(self.tab_simulation, "Simulation & Contrôle PID")
         self.tab_manager.addTab(self.tab_physics, "Paramétrage Physique & Limites")
+        self.tab_manager.addTab(self.tab_experiments, "Mesures & Essais (DoE)")
 
         main_layout.addWidget(self.tab_manager)
 
@@ -236,8 +352,7 @@ class IndustrialSupervisionDashboard(QtWidgets.QMainWindow):
         self.lbl_overshoot = QtWidgets.QLabel("Dépassement maximal : -- %")
         self.lbl_steady_error = QtWidgets.QLabel("Erreur statique : -- tr/min")
 
-        # Stylisation pour un rendu plus industriel
-        style = "font-weight: bold; color: #FFFFF; font-size: 13px; padding: 2px;"
+        style = "font-weight: bold; color: #FFFFFF; font-size: 13px; padding: 2px;"
         self.lbl_rise_time.setStyleSheet(style)
         self.lbl_overshoot.setStyleSheet(style)
         self.lbl_steady_error.setStyleSheet(style)
@@ -287,12 +402,11 @@ class IndustrialSupervisionDashboard(QtWidgets.QMainWindow):
         layout = QtWidgets.QVBoxLayout(self.tab_physics)
         form_layout = QtWidgets.QFormLayout()
 
-        # Helpers pour créer des champs numériques (QDoubleSpinBox) uniformes
         def create_spinbox(value, step, decimals, maximum=1000.0):
             spinbox = QtWidgets.QDoubleSpinBox()
             spinbox.setDecimals(decimals)
             spinbox.setSingleStep(step)
-            spinbox.setRange(0.0001, maximum)
+            spinbox.setRange(0.0, maximum)  # Tolère temporairement 0, sécurité gérée lors de l'application
             spinbox.setValue(value)
             return spinbox
 
@@ -307,9 +421,8 @@ class IndustrialSupervisionDashboard(QtWidgets.QMainWindow):
         self.spin_constant_k = create_spinbox(0.01, 0.001, 4)
         self.spin_resistance_r = create_spinbox(1.0, 0.1, 2)
         self.spin_inductance_l = create_spinbox(0.5, 0.01, 3)
-        self.spin_voltage_max = create_spinbox(24.0, 1.0, 1)  # Alimentation max (V)
+        self.spin_voltage_max = create_spinbox(24.0, 1.0, 1)
 
-        # Séparation visuelle pour les paramètres du Régulateur
         lbl_pid_title = QtWidgets.QLabel("--- Paramètres du Régulateur PID ---")
         lbl_pid_title.setStyleSheet("font-weight: bold; color: #2980B9; margin-top: 10px;")
         form_layout.addRow(lbl_pid_title)
@@ -317,7 +430,6 @@ class IndustrialSupervisionDashboard(QtWidgets.QMainWindow):
         form_layout.addRow("Gain Intégral (Ki):", self.spin_gain_i)
         form_layout.addRow("Gain Dérivé (Kd):", self.spin_gain_d)
 
-        # Séparation visuelle pour la Physique du Moteur
         lbl_phys_title = QtWidgets.QLabel("--- Paramètres Physiques du Moteur ---")
         lbl_phys_title.setStyleSheet("font-weight: bold; color: #C0392B; margin-top: 20px;")
         form_layout.addRow(lbl_phys_title)
@@ -328,7 +440,6 @@ class IndustrialSupervisionDashboard(QtWidgets.QMainWindow):
         form_layout.addRow("Inductance d'induit L (H):", self.spin_inductance_l)
         form_layout.addRow("Tension d'Alimentation Max V (Volts):", self.spin_voltage_max)
 
-        # Bouton d'application
         self.btn_apply_physics = QtWidgets.QPushButton("Appliquer les Paramètres & Calculer les Limites")
         self.btn_apply_physics.setStyleSheet("font-weight: bold; padding: 10px; margin-top: 15px;")
         self.btn_apply_physics.clicked.connect(self.on_apply_physical_parameters)
@@ -341,6 +452,67 @@ class IndustrialSupervisionDashboard(QtWidgets.QMainWindow):
         layout.addWidget(self.lbl_theoretical_max)
         layout.addStretch()
 
+    ## @brief Construit l'interface de l'onglet Mesures & Essais (Matrice de plan d'expériences).
+    def _populate_experiments_tab(self):
+        layout = QtWidgets.QVBoxLayout(self.tab_experiments)
+
+        # Barre de contrôle supérieure
+        control_layout = QtWidgets.QHBoxLayout()
+        lbl_rows = QtWidgets.QLabel("Nombre d'essais configurés :")
+        lbl_rows.setStyleSheet("font-weight: bold;")
+
+        self.spin_experiment_rows = QtWidgets.QSpinBox()
+        self.spin_experiment_rows.setRange(1, 1000)
+        self.spin_experiment_rows.setValue(9)  # L9 Taguchi par défaut
+        self.spin_experiment_rows.setMinimumWidth(70)  # Agrandissement pour 2 ou 3 chiffres
+        self.spin_experiment_rows.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+
+        btn_apply_rows = QtWidgets.QPushButton("Mettre à jour la grille")
+        btn_apply_rows.clicked.connect(self.on_update_experiment_grid_rows)
+
+        self.btn_run_experiments = QtWidgets.QPushButton("Lancer les essais")
+        self.btn_run_experiments.setStyleSheet(
+            "font-weight: bold; background-color: #27AE60; color: white; padding: 5px 15px;")
+        self.btn_run_experiments.clicked.connect(self.on_run_experiments)
+
+        control_layout.addWidget(lbl_rows)
+        control_layout.addWidget(self.spin_experiment_rows)
+        control_layout.addWidget(btn_apply_rows)
+        control_layout.addSpacing(20)
+        control_layout.addWidget(self.btn_run_experiments)
+        control_layout.addStretch()
+
+        # Grille interactive (ExperimentDataGrid)
+        self.grid_experiments = ExperimentDataGrid()
+        self.grid_experiments.setColumnCount(7)
+
+        # Ajout de la liste d'étiquettes correspondantes
+        labels = ["K_p", "K_i", "K_d", "J","Dépassement", "Temps de montée", "Erreur statique"]
+        self.grid_experiments.setHorizontalHeaderLabels(labels)
+
+        # Ajustement du style et de la taille des colonnes
+        header = self.grid_experiments.horizontalHeader()
+        header.setSectionResizeMode(QtWidgets.QHeaderView.ResizeMode.Stretch)
+        self.grid_experiments.setStyleSheet("QTableWidget { gridline-color: #BDC3C7; }")
+
+        self.on_update_experiment_grid_rows()  # Initialisation des lignes
+
+        layout.addLayout(control_layout)
+        layout.addWidget(self.grid_experiments)
+
+    ## @brief Met à jour le nombre de lignes de la grille d'essais sans effacer les données existantes.
+    def on_update_experiment_grid_rows(self):
+        new_row_count = self.spin_experiment_rows.value()
+        self.grid_experiments.setRowCount(new_row_count)
+
+        # Initialisation des cellules vides par "0.0"
+        self.grid_experiments.blockSignals(True)
+        for r in range(new_row_count):
+            for c in range(self.grid_experiments.columnCount()):
+                if not self.grid_experiments.item(r, c):
+                    self.grid_experiments.setItem(r, c, QtWidgets.QTableWidgetItem("0.0"))
+        self.grid_experiments.blockSignals(False)
+
     ## @brief Configure le séquenceur temps réel.
     def _initialize_realtime_timer(self):
         self.simulation_timer = QtCore.QTimer()
@@ -348,13 +520,11 @@ class IndustrialSupervisionDashboard(QtWidgets.QMainWindow):
         self.simulation_timer.timeout.connect(self.execute_simulation_cycle)
 
     ## @brief Callback lié au mouvement du slider de consigne.
-    #  @details Réinitialise également les compteurs d'analyse de performance (Échelon de test).
     def on_target_slider_changed(self, value):
         self.target_speed_rpm = float(value)
         self.target_speed_rad_s = self.target_speed_rpm * (2 * np.pi) / 60.0
         self.lbl_target_display.setText(f"Consigne Vitesse: {self.target_speed_rpm:.1f} tr/min")
 
-        # Réinitialisation des indicateurs de performance pour la nouvelle consigne
         self.initial_speed_rpm = self.buffer_measured_rpm[-1] if len(self.buffer_measured_rpm) > 0 else 0.0
         self.maximum_speed_rpm = self.initial_speed_rpm
         self.time_at_10_percent_s = None
@@ -365,12 +535,10 @@ class IndustrialSupervisionDashboard(QtWidgets.QMainWindow):
 
     ## @brief Callback pour appliquer les modifications physiques et calculer la limite.
     def on_apply_physical_parameters(self):
-        # Récupération des données UI pour le PID
         kp = self.spin_gain_p.value()
         ki = self.spin_gain_i.value()
         kd = self.spin_gain_d.value()
 
-        # Récupération des données UI pour la physique
         j = self.spin_inertia_j.value()
         b = self.spin_friction_b.value()
         k = self.spin_constant_k.value()
@@ -378,12 +546,96 @@ class IndustrialSupervisionDashboard(QtWidgets.QMainWindow):
         l = self.spin_inductance_l.value()
         v_max = self.spin_voltage_max.value()
 
-        # Injection dans les modèles
+        # Sécurité Division par Zéro
+        if j <= 0.0:
+            QtWidgets.QMessageBox.critical(self, "Erreur de Physique",
+                                           "Le moment d'inertie J ne peut pas être nul ou négatif.\nVeuillez saisir une valeur valide pour éviter une division par zéro.")
+            self.spin_inertia_j.setValue(0.01)  # Rétablissement forcé d'une valeur sure
+            return
+
         self.pid_controller.update_gains(kp, ki, kd)
         self.pid_controller.update_saturation_limits(v_max)
         self.motor_model.update_physical_parameters(j, b, k, r, l)
 
         self._calculate_theoretical_maximum()
+
+    ## @brief Exécute de manière automatisée et accélérée tous les essais renseignés dans la grille DoE.
+    def on_run_experiments(self):
+        # Récupération des constantes physiques de base inchangées pour l'expérience
+        b = self.spin_friction_b.value()
+        k = self.spin_constant_k.value()
+        r_res = self.spin_resistance_r.value()
+        l = self.spin_inductance_l.value()
+        v_max = self.spin_voltage_max.value()
+
+        target_rpm = self.target_speed_rpm
+        target_rad = self.target_speed_rad_s
+        dt = self.time_step_s
+        sim_duration_s = 10.0  # Durée de simulation forcée pour chaque essai
+
+        self.grid_experiments.blockSignals(True)
+
+        for row in range(self.grid_experiments.rowCount()):
+            try:
+                kp = float(self.grid_experiments.item(row, 0).text())
+                ki = float(self.grid_experiments.item(row, 1).text())
+                kd = float(self.grid_experiments.item(row, 2).text())
+                j_inertia = float(self.grid_experiments.item(row, 3).text())
+            except (ValueError, AttributeError):
+                continue
+
+            # Sécurité anti-crash pour la division par zéro du modèle mécanique
+            if j_inertia <= 0.0:
+                QtWidgets.QMessageBox.critical(
+                    self,
+                    "Interruption des Essais",
+                    f"Erreur à la ligne {row + 1} : L'inertie J est nulle ou négative.\n"
+                    "L'algorithme de simulation a été interrompu pour éviter une division par zéro."
+                )
+                self.grid_experiments.blockSignals(False)
+                return
+
+            # Instanciation de modèles temporaires isolés pour ne pas affecter le graphique en temps réel
+            test_motor = DcMotorPhysicalModel(inertia_j=j_inertia, friction_b=b, constant_k=k, resistance_r=r_res,
+                                              inductance_l=l)
+            test_pid = PidControllerIndustrial(gain_p=kp, gain_i=ki, gain_d=kd, saturation_limit_v=v_max)
+
+            t = 0.0
+            max_rpm = 0.0
+            t10 = None
+            t90 = None
+            step_amp = target_rpm
+
+            # Boucle d'intégration numérique rapide
+            while t < sim_duration_s:
+                voltage = test_pid.compute_control_effort(target_rad, test_motor.speed_rad_s, dt)
+                speed_rad = test_motor.execute_simulation_step(voltage, dt)
+                speed_rpm = speed_rad * 60.0 / (2 * np.pi)
+
+                if speed_rpm > max_rpm:
+                    max_rpm = speed_rpm
+
+                if step_amp > 1.0:
+                    if t10 is None and speed_rpm >= 0.10 * step_amp:
+                        t10 = t
+                    if t90 is None and speed_rpm >= 0.90 * step_amp:
+                        t90 = t
+
+                t += dt
+
+            # Calcul des métriques de sortie
+            overshoot = max(0.0, ((max_rpm - target_rpm) / target_rpm) * 100.0) if target_rpm > 0 else 0.0
+            rise_time = (t90 - t10) if (t90 is not None and t10 is not None) else 0.0
+            steady_error = target_rpm - speed_rpm
+
+            # Écriture dans les colonnes de réponse
+            self.grid_experiments.setItem(row, 4, QtWidgets.QTableWidgetItem(f"{overshoot:.2f}"))
+            self.grid_experiments.setItem(row, 5, QtWidgets.QTableWidgetItem(f"{rise_time:.3f}"))
+            self.grid_experiments.setItem(row, 6, QtWidgets.QTableWidgetItem(f"{steady_error:.2f}"))
+
+        self.grid_experiments.blockSignals(False)
+        QtWidgets.QMessageBox.information(self, "Plan d'Expériences Terminé",
+                                          "Tous les essais ont été simulés avec succès.")
 
     ## @brief Calcule et affiche la vitesse de saturation théorique du moteur.
     def _calculate_theoretical_maximum(self):
@@ -392,7 +644,6 @@ class IndustrialSupervisionDashboard(QtWidgets.QMainWindow):
         k = self.motor_model.constant_k
         v_max = self.pid_controller.saturation_max_v
 
-        # omega_max = (V * K) / (R * b + K^2)
         denominator = (r * b) + (k ** 2)
 
         if denominator > 0:
@@ -419,7 +670,6 @@ class IndustrialSupervisionDashboard(QtWidgets.QMainWindow):
         self.pid_controller.previous_error = 0.0
         self.elapsed_time_s = 0.0
 
-        # Reset variables d'analyse
         self.initial_speed_rpm = 0.0
         self.maximum_speed_rpm = 0.0
         self.time_at_10_percent_s = None
@@ -433,19 +683,14 @@ class IndustrialSupervisionDashboard(QtWidgets.QMainWindow):
         self.buffer_target_rpm = [0.0] * self.max_display_points
         self._refresh_plot_curves()
 
-        # Réactivation de l'auto-dimensionnement pour replacer le graphe à l'échelle initiale
         self.plot_widget.enableAutoRange(axis='xy')
 
     ## @brief Cycle d'exécution principal appelé par le Timer.
-    #  @details Contient l'appel au solveur d'équations différentielles, au PID
-    #  ainsi que la détection algorithmique des métriques de performance temps-réel.
     def execute_simulation_cycle(self):
         self.elapsed_time_s += self.time_step_s
 
-        # Lecture du capteur
         measured_feedback_rad_s = self.motor_model.speed_rad_s
 
-        # Calcul de commande avec état de l'IHM
         command_voltage_v = self.pid_controller.compute_control_effort(
             self.target_speed_rad_s,
             measured_feedback_rad_s,
@@ -455,28 +700,22 @@ class IndustrialSupervisionDashboard(QtWidgets.QMainWindow):
             enable_d=self.checkbox_d.isChecked()
         )
 
-        # Application au modèle physique
         new_speed_rad_s = self.motor_model.execute_simulation_step(command_voltage_v, self.time_step_s)
         new_speed_rpm = new_speed_rad_s * 60.0 / (2 * np.pi)
 
-        # --- CALCUL DES INDICATEURS DE PERFORMANCE ---
-
-        # 1. Erreur Statique (Calculée à chaque pas de temps)
+        # 1. Erreur Statique
         error_rpm = self.target_speed_rpm - new_speed_rpm
         self.lbl_steady_error.setText(f"Erreur statique : {error_rpm:+.2f} tr/min")
 
-        # 2. Dépassement & Temps de Montée (Analyse sur échelon positif significatif)
+        # 2. Dépassement & Temps de Montée
         step_amplitude = self.target_speed_rpm - self.initial_speed_rpm
         if step_amplitude > 1.0:
-            # Dépassement maximal (Overshoot)
             if new_speed_rpm > self.maximum_speed_rpm:
                 self.maximum_speed_rpm = new_speed_rpm
                 if self.target_speed_rpm > 0:
                     overshoot_pct = ((self.maximum_speed_rpm - self.target_speed_rpm) / self.target_speed_rpm) * 100.0
-                    # N'afficher le dépassement que s'il est au-dessus de la consigne (valeur positive)
                     self.lbl_overshoot.setText(f"Dépassement maximal : {max(0.0, overshoot_pct):.2f} %")
 
-            # Temps de montée (Rise time de 10% à 90%)
             threshold_10 = self.initial_speed_rpm + 0.10 * step_amplitude
             threshold_90 = self.initial_speed_rpm + 0.90 * step_amplitude
 
@@ -485,14 +724,10 @@ class IndustrialSupervisionDashboard(QtWidgets.QMainWindow):
 
             if self.time_at_90_percent_s is None and new_speed_rpm >= threshold_90:
                 self.time_at_90_percent_s = self.elapsed_time_s
-
-                # Dès le franchissement des 90%, on fige le calcul final
                 if self.time_at_10_percent_s is not None:
                     rise_time_s = self.time_at_90_percent_s - self.time_at_10_percent_s
                     self.lbl_rise_time.setText(f"Temps de montée (10-90%) : {rise_time_s:.3f} s")
-        # ---------------------------------------------
 
-        # Mise à jour des FIFO
         self.buffer_time.pop(0)
         self.buffer_time.append(self.elapsed_time_s)
         self.buffer_measured_rpm.pop(0)
