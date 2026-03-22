@@ -22,7 +22,9 @@ Application PyQt6 de supervision industrielle permettant de simuler un moteur à
   - Lancement accéléré et automatisé des plans d'expériences en tâche de fond avec auto-remplissage des réponses (performances mesurées pour chaque essai).
 
 ## Installation
+```bash
 pip install -r requirements.txt
+```
 
 ## Lancement
 ```bash
@@ -34,4 +36,3 @@ python simulation_moteur_industriel.py
 - PyQt6
 - pyqtgraph
 - numpy
-```
