@@ -56,10 +56,17 @@ class DcMotorPhysicalModel:
     #  @param time_step_s Pas de temps de l'intégration numérique (secondes).
     #  @return La nouvelle vitesse angulaire atteinte (rad/s).
     def execute_simulation_step(self, applied_voltage_v, time_step_s):
-        # Calcul des dérivées temporelles
-        current_derivative = (
-                                         applied_voltage_v - self.constant_k * self.speed_rad_s - self.resistance_r * self.current_amp) / self.inductance_l
-        speed_derivative = (self.constant_k * self.current_amp - self.friction_b * self.speed_rad_s) / self.inertia_j
+        if time_step_s <= 0.0:
+            return self.speed_rad_s
+
+        # Calcul des dérivées temporelles avec protection division par zéro
+        current_derivative = 0.0
+        if self.inductance_l > 0.0:
+            current_derivative = (applied_voltage_v - self.constant_k * self.speed_rad_s - self.resistance_r * self.current_amp) / self.inductance_l
+
+        speed_derivative = 0.0
+        if self.inertia_j > 0.0:
+            speed_derivative = (self.constant_k * self.current_amp - self.friction_b * self.speed_rad_s) / self.inertia_j
 
         # Intégration d'Euler
         self.current_amp += current_derivative * time_step_s
@@ -107,6 +114,9 @@ class PidControllerIndustrial:
     #  @return Effort de commande borné (Volts).
     def compute_control_effort(self, setpoint_target, measured_feedback, time_step_s, enable_p=True, enable_i=True,
                                enable_d=True):
+        if time_step_s <= 0.0:
+            return 0.0
+
         current_error = setpoint_target - measured_feedback
 
         # Action Proportionnelle
@@ -129,10 +139,12 @@ class PidControllerIndustrial:
         # Anti-Windup
         if command_output > self.saturation_max_v:
             command_output = self.saturation_max_v
-            if enable_i: self.error_integral -= current_error * time_step_s
+            if enable_i:
+                self.error_integral -= current_error * time_step_s
         elif command_output < self.saturation_min_v:
             command_output = self.saturation_min_v
-            if enable_i: self.error_integral -= current_error * time_step_s
+            if enable_i:
+                self.error_integral -= current_error * time_step_s
 
         self.previous_error = current_error
         return command_output
@@ -204,10 +216,10 @@ class ExperimentDataGrid(QtWidgets.QTableWidget):
         if not selection:
             return
 
-        sel = selection
+        sel = selection[0]
         copy_text = ""
         for row in range(sel.topRow(), sel.bottomRow() + 1):
-            row_data = ''
+            row_data = []
             for col in range(sel.leftColumn(), sel.rightColumn() + 1):
                 item = self.item(row, col)
                 row_data.append(item.text() if item else "")
@@ -225,7 +237,7 @@ class ExperimentDataGrid(QtWidgets.QTableWidget):
         if not selection:
             return
 
-        sel = selection
+        sel = selection[0]
         start_row = sel.topRow()
         start_col = sel.leftColumn()
 
@@ -233,8 +245,8 @@ class ExperimentDataGrid(QtWidgets.QTableWidget):
         rows = text.split('\n')
 
         # Comportement "Excel-like" : Si on copie une seule valeur et qu'on a sélectionné plusieurs cellules
-        if len(rows) == 1 and '\t' not in rows:
-            single_val = rows.strip()
+        if len(rows) == 1 and '\t' not in rows[0]:
+            single_val = rows[0].strip()
             for sel_range in selection:
                 for r in range(sel_range.topRow(), sel_range.bottomRow() + 1):
                     for c in range(sel_range.leftColumn(), sel_range.rightColumn() + 1):
@@ -448,11 +460,11 @@ class IndustrialSupervisionDashboard(QtWidgets.QMainWindow):
         layout = QtWidgets.QVBoxLayout(self.tab_physics)
         form_layout = QtWidgets.QFormLayout()
 
-        def create_spinbox(value, step, decimals, maximum=1000.0):
+        def create_spinbox(value, step, decimals, maximum=1000.0, minimum=0.0):
             spinbox = QtWidgets.QDoubleSpinBox()
             spinbox.setDecimals(decimals)
             spinbox.setSingleStep(step)
-            spinbox.setRange(0.0, maximum)
+            spinbox.setRange(minimum, maximum)
             spinbox.setValue(value)
             return spinbox
 
@@ -462,12 +474,12 @@ class IndustrialSupervisionDashboard(QtWidgets.QMainWindow):
         self.spin_gain_d = create_spinbox(12.0, 0.1, 2)
 
         # Paramètres Physiques
-        self.spin_inertia_j = create_spinbox(0.01, 0.001, 4)
+        self.spin_inertia_j = create_spinbox(0.01, 0.001, 4, minimum=0.0001)
         self.spin_friction_b = create_spinbox(0.1, 0.01, 4)
         self.spin_constant_k = create_spinbox(0.01, 0.001, 4)
-        self.spin_resistance_r = create_spinbox(1.0, 0.1, 2)
-        self.spin_inductance_l = create_spinbox(0.5, 0.01, 3)
-        self.spin_voltage_max = create_spinbox(24.0, 1.0, 1)
+        self.spin_resistance_r = create_spinbox(1.0, 0.1, 2, minimum=0.01)
+        self.spin_inductance_l = create_spinbox(0.5, 0.01, 3, minimum=0.001)
+        self.spin_voltage_max = create_spinbox(24.0, 1.0, 1, minimum=1.0)
 
         # Bruit Stochastique de Mesure
         self.spin_noise_std = create_spinbox(0.1, 0.01, 3, maximum=10.0)
@@ -598,10 +610,13 @@ class IndustrialSupervisionDashboard(QtWidgets.QMainWindow):
         self.noise_std = self.spin_noise_std.value()
 
         # Sécurité Division par Zéro
-        if j <= 0.0:
+        if j <= 0.0 or l <= 0.0:
             QtWidgets.QMessageBox.critical(self, "Erreur de Physique",
-                                           "Le moment d'inertie J ne peut pas être nul ou négatif.\nVeuillez saisir une valeur valide pour éviter une division par zéro.")
-            self.spin_inertia_j.setValue(0.01)
+                                           "L'inertie J et l'inductance L ne peuvent pas être nulles ou négatives.\nVeuillez saisir une valeur valide pour éviter une division par zéro.")
+            if j <= 0.0:
+                self.spin_inertia_j.setValue(0.01)
+            if l <= 0.0:
+                self.spin_inductance_l.setValue(0.5)
             return
 
         self.pid_controller.update_gains(kp, ki, kd)
@@ -639,11 +654,11 @@ class IndustrialSupervisionDashboard(QtWidgets.QMainWindow):
             except (ValueError, AttributeError):
                 continue
 
-            if j_inertia <= 0.0:
+            if j_inertia <= 0.0 or l <= 0.0:
                 QtWidgets.QMessageBox.critical(
                     self,
                     "Interruption des Essais",
-                    f"Erreur à la ligne {row + 1} : L'inertie J est nulle ou négative.\n"
+                    f"Erreur à la ligne {row + 1} : L'inertie J ou l'inductance L est nulle ou négative.\n"
                     "L'algorithme de simulation a été interrompu pour éviter une division par zéro."
                 )
                 self.grid_experiments.blockSignals(False)
@@ -658,10 +673,11 @@ class IndustrialSupervisionDashboard(QtWidgets.QMainWindow):
             t10 = None
             t90 = None
             step_amp = target_rpm
+            speed_rpm = 0.0
 
             while t < sim_duration_s:
                 # Injection stochastique du bruit capteur pour l'essai
-                sensor_noise = np.random.normal(0.0, noise_std)
+                sensor_noise = np.random.normal(0.0, noise_std) if noise_std > 0.0 else 0.0
                 measured_feedback_rad_s = test_motor.speed_rad_s + sensor_noise
 
                 voltage = test_pid.compute_control_effort(target_rad, measured_feedback_rad_s, dt, enable_p, enable_i,
@@ -750,7 +766,7 @@ class IndustrialSupervisionDashboard(QtWidgets.QMainWindow):
         self.elapsed_time_s += self.time_step_s
 
         # Lecture du capteur avec injection de bruit stochastique
-        sensor_noise = np.random.normal(0.0, self.noise_std)
+        sensor_noise = np.random.normal(0.0, self.noise_std) if self.noise_std > 0.0 else 0.0
         measured_feedback_rad_s = self.motor_model.speed_rad_s + sensor_noise
 
         command_voltage_v = self.pid_controller.compute_control_effort(
